@@ -31,6 +31,8 @@ app.post('/webhook/lead', async (req, res) => {
         lead_name: name,
         company_name: company || '',
         lead_message: message || '',
+        lead_phone: phone,
+        lead_email: email || '',
       },
     });
 
