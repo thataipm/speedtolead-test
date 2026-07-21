@@ -1,29 +1,30 @@
-const BASE = 'https://api.cal.com/v1';
+const BASE = 'https://api.cal.com/v2';
 
-// Creates a booking on the configured event type. Called from our /tools/book-appointment
-// endpoint, which the ElevenLabs agent hits mid-conversation once a time is agreed on.
+// Cal.com decommissioned API v1 (returns 410 now). v2 uses Bearer auth and a
+// different body shape (attendee is its own object with a required timeZone).
 export async function createBooking({ name, email, phone, startTimeISO, timeZone }) {
-  const url = `${BASE}/bookings?apiKey=${process.env.CALCOM_API_KEY}`;
-
-  const res = await fetch(url, {
+  const res = await fetch(`${BASE}/bookings`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${process.env.CALCOM_API_KEY}`,
+      'cal-api-version': '2026-02-25',
+    },
     body: JSON.stringify({
-      eventTypeId: parseInt(process.env.CALCOM_EVENT_TYPE_ID, 10),
       start: startTimeISO,
-      responses: {
+      eventTypeId: parseInt(process.env.CALCOM_EVENT_TYPE_ID, 10),
+      attendee: {
         name,
         email: email || 'no-reply@regain.media',
-        smsReminderNumber: phone,
+        timeZone: timeZone || 'America/Detroit',
+        phoneNumber: phone,
       },
-      timeZone: timeZone || 'America/Detroit',
-      language: 'en',
-      metadata: {},
     }),
   });
 
   if (!res.ok) {
     throw new Error(`Cal.com booking failed: ${res.status} ${await res.text()}`);
   }
-  return res.json();
+  const json = await res.json();
+  return json.data; // { id, uid, status, start, end, ... }
 }
