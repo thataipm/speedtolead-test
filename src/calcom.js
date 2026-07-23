@@ -12,29 +12,40 @@ const BASE = 'https://api.cal.com/v2';
 // Detroit time" and landed on the calendar at 8:00am. Fix: convert the agent's local
 // wall-clock time + IANA zone into a real UTC ISO string before ever calling Cal.com.
 function localToUTCISOString(localISO, timeZone) {
-    // Expect a naive local datetime like "2026-07-27T12:00:00" (no Z / offset).
-  // Strip any stray Z just in case the agent ever sends one — we always treat the
-  // numbers as wall-clock time in `timeZone`, not as already-UTC.
-  const [datePart, timePart = '00:00:00'] = localISO.replace('Z', '').split('T');
+    // Bug found 2026-07-24: the agent's LLM sometimes computes the UTC instant itself
+// and sends an already-correct offset-aware string (e.g. "...T15:00:00Z" for "11am
+// Eastern", where 15:00 UTC really is 11am EDT). The first version of this function
+// unconditionally stripped any "Z" and re-interpreted the numbers as local wall-clock
+// time in `timeZone`, which double-applied the zone offset: correct 15:00Z got
+// shifted an extra 4 hours to 19:00Z (3pm EDT instead of 11am EDT). Date stayed right
+// because only the time got double-shifted. Fix: if the string already carries an
+// explicit UTC/offset marker, trust it as a real instant and don't touch it — only
+// a bare wall-clock string with NO offset needs the local-to-UTC conversion below.
+if (/Z$|[+-]\d{2}:?\d{2}$/.test(localISO.trim())) {
+    return new Date(localISO.trim()).toISOString();
+}
+
+// Expect a naive local datetime like "2026-07-27T12:00:00" (no Z / offset).
+const [datePart, timePart = '00:00:00'] = localISO.split('T');
     const [year, month, day] = datePart.split('-').map(Number);
     const [hour, minute, second = 0] = timePart.split(':').map(Number);
 
-  // Standard dependency-free trick: guess the instant is UTC, see what wall-clock time
-  // that instant actually shows in the target zone, then correct by the difference.
-  // Works for one pass because IANA offsets are whole/half/quarter hours and stable
-  // within a single day (except right at a DST transition, which isn't a concern for
-  // appointment booking granularity here).
-  const guessUTC = Date.UTC(year, month - 1, day, hour, minute, second);
+// Standard dependency-free trick: guess the instant is UTC, see what wall-clock time
+// that instant actually shows in the target zone, then correct by the difference.
+// Works for one pass because IANA offsets are whole/half/quarter hours and stable
+// within a single day (except right at a DST transition, which isn't a concern for
+// appointment booking granularity here).
+const guessUTC = Date.UTC(year, month - 1, day, hour, minute, second);
     const dtf = new Intl.DateTimeFormat('en-US', {
-          timeZone,
-          hour12: false,
-          year: 'numeric', month: '2-digit', day: '2-digit',
-          hour: '2-digit', minute: '2-digit', second: '2-digit',
+        timeZone,
+        hour12: false,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
     const parts = Object.fromEntries(dtf.formatToParts(new Date(guessUTC)).map(p => [p.type, p.value]));
     const shownAsUTC = Date.UTC(
-          Number(parts.year), Number(parts.month) - 1, Number(parts.day),
-          Number(parts.hour) === 24 ? 0 : Number(parts.hour), Number(parts.minute), Number(parts.second)
+        Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+        Number(parts.hour) === 24 ? 0 : Number(parts.hour), Number(parts.minute), Number(parts.second)
         );
     const offset = guessUTC - shownAsUTC;
     return new Date(guessUTC + offset).toISOString();
@@ -44,28 +55,28 @@ export async function createBooking({ name, email, phone, startTimeISO, timeZone
     const zone = timeZone || 'America/Detroit';
     const utcStart = localToUTCISOString(startTimeISO, zone);
 
-  const res = await fetch(`${BASE}/bookings`, {
-        method: 'POST',
-        headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${process.env.CALCOM_API_KEY}`,
-                'cal-api-version': '2026-02-25',
+const res = await fetch(`${BASE}/bookings`, {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.CALCOM_API_KEY}`,
+        'cal-api-version': '2026-02-25',
+    },
+    body: JSON.stringify({
+        start: utcStart,
+        eventTypeId: parseInt(process.env.CALCOM_EVENT_TYPE_ID, 10),
+        attendee: {
+            name,
+            email: email || 'no-reply@regain.media',
+            timeZone: zone,
+            phoneNumber: phone,
         },
-        body: JSON.stringify({
-                start: utcStart,
-                eventTypeId: parseInt(process.env.CALCOM_EVENT_TYPE_ID, 10),
-                attendee: {
-                          name,
-                          email: email || 'no-reply@regain.media',
-                          timeZone: zone,
-                          phoneNumber: phone,
-                },
-        }),
-  });
+    }),
+});
 
-  if (!res.ok) {
-        throw new Error(`Cal.com booking failed: ${res.status} ${await res.text()}`);
-  }
+if (!res.ok) {
+    throw new Error(`Cal.com booking failed: ${res.status} ${await res.text()}`);
+}
     const json = await res.json();
     return json.data; // { id, uid, status, start, end, ... }
 }
